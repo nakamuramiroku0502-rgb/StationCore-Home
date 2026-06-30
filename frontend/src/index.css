@@ -1,3 +1,7 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+body {
+  /* 導入したプロ用フォントをシステム全体に適用 */
+  font-family: 'Noto Sans JP', sans-serif;
+  background-color: #f8fafc;
+}

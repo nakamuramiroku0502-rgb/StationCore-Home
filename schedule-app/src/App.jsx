@@ -1,18 +1,20 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { db } from './firebase';
+import { collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc } from 'firebase/firestore';
 
 export default function App() {
   const params = new URLSearchParams(window.location.search);
   const selectedStaffFromUrl = params.get('staff');
-  const displayMode = selectedStaffFromUrl ? `${selectedStaffFromUrl} さんの予定をハイライト` : 'ステーション全体を表示中';
 
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [moveHistory, setMoveHistory] = useState([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
-  
   const [isSlotsModalOpen, setIsSlotsModalOpen] = useState(false);
 
-  // 曜日ごとのレーン数を個別に管理するState
+  // ★ 新機能：ハンバーガーメニューの開閉状態を管理
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+
   const [laneCounts, setLaneCounts] = useState({
     '月': 6, '火': 6, '水': 6, '木': 6, '金': 6, '土': 6, '日': 6
   });
@@ -53,20 +55,18 @@ export default function App() {
     patient: '', insurance: '介護保険', day: '月', hour: '09', min: '00', duration: 60, fixedStaff: '', memo: '', laneId: null
   });
 
-  const [visits, setVisits] = useState([
-    { id: 1, day: '月', time: '09:00', duration: 60, patient: '田中 幸子', staffNeeded: 2, assigned: ['山田 太郎', '鈴木 花子'], insurance: '介護保険', memo: 'リハビリパンツのストック確認をお願いします。', laneId: 0 },
-    { id: 2, day: '月', time: '09:30', duration: 30, patient: '渡辺 健一', staffNeeded: 1, assigned: ['佐藤 健太'], insurance: '医療保険', memo: '', laneId: 1 },
-    
-    { id: 101, day: '月', time: '10:00', duration: 60, patient: '重なりテスト1', staffNeeded: 1, assigned: ['未定'], insurance: '介護保険', memo: '', laneId: 2 },
-    { id: 102, day: '月', time: '10:00', duration: 40, patient: '重なりテスト2', staffNeeded: 1, assigned: ['未定'], insurance: '精神科訪問看護', memo: '', laneId: 3 },
-    { id: 103, day: '月', time: '10:10', duration: 30, patient: '重なりテスト3', staffNeeded: 1, assigned: ['未定'], insurance: '医療保険', memo: '', laneId: 4 },
-    { id: 104, day: '月', time: '10:20', duration: 60, patient: '重なりテスト4', staffNeeded: 1, assigned: ['未定'], insurance: '介護保険', memo: '', laneId: 5 },
+  const [visits, setVisits] = useState([]);
 
-    { id: 3, day: '月', time: '14:20', duration: 40, patient: '伊藤 トメ', staffNeeded: 1, assigned: ['山田 太郎'], insurance: '介護保険', memo: '', laneId: 0 },
-    { id: 4, day: '火', time: '10:00', duration: 90, patient: '山本 さくら', staffNeeded: 2, assigned: ['未定', '未定'], insurance: '精神科訪問看護', memo: '精神科対応必須', laneId: 0 },
-    { id: 5, day: '水', time: '11:00', duration: 60, patient: '高橋 吾郎', staffNeeded: 1, assigned: ['鈴木 花子'], insurance: '介護保険', memo: '', laneId: 0 },
-    { id: 6, day: '金', time: '15:30', duration: 30, patient: '小林 松子', staffNeeded: 1, assigned: ['佐藤 健太'], insurance: '介護保険', memo: '', laneId: 0 },
-  ]);
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, 'visits'), (snapshot) => {
+      const list = snapshot.docs.map(doc => ({
+        id: doc.id, 
+        ...doc.data()
+      }));
+      setVisits(list);
+    });
+    return () => unsubscribe();
+  }, []);
 
   const getMinutesFromStart = (timeStr) => {
     const [h, m] = (timeStr || '09:00').split(':').map(Number);
@@ -150,6 +150,38 @@ export default function App() {
     setIsModalOpen(true);
   };
 
+  const handleTimelineMouseMove = (e, targetDay) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    const totalMins = Math.max(0, Math.floor(x / PIXELS_PER_MIN));
+    let hour = Math.floor(totalMins / 60) + 9;
+    let min = Math.round((totalMins % 60) / 10) * 10;
+    if (min >= 60) { hour += 1; min = 0; }
+    if (hour > 18 || (hour === 18 && min > 20)) { hour = 18; min = 20; }
+
+    const roundedMins = (hour - 9) * 60 + min;
+    const leftPos = roundedMins * PIXELS_PER_MIN;
+
+    let targetLane = Math.floor((y - HEADER_OFFSET) / LANE_HEIGHT);
+    if (targetLane < 0) targetLane = 0;
+    const currentLaneCount = laneCounts[targetDay] || 6;
+    if (targetLane >= currentLaneCount) targetLane = currentLaneCount - 1;
+    const topPos = HEADER_OFFSET + targetLane * LANE_HEIGHT;
+
+    setHoveredSlot({
+      day: targetDay,
+      left: leftPos,
+      top: topPos,
+      timeStr: `${hour.toString().padStart(2, '0')}:${min.toString().padStart(2, '0')}`
+    });
+  };
+
+  const handleTimelineMouseLeave = () => {
+    setHoveredSlot({ day: null, left: 0, top: 0, timeStr: '' });
+  };
+
   const handleTimelineClick = (e, targetDay) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
@@ -212,44 +244,54 @@ export default function App() {
     setFormData({ ...formData, insurance: newInsurance, duration: autoDuration });
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!formData.patient.trim()) return alert('利用者名を入力してください。');
     const timeStr = `${formData.hour}:${formData.min}`;
     const staffList = formData.fixedStaff ? [formData.fixedStaff] : ['未定'];
     
-    if (editingId) {
-      setVisits(prev => prev.map(v => v.id === editingId ? {
-        ...v, patient: formData.patient, day: formData.day, time: timeStr, duration: formData.duration, assigned: staffList, insurance: formData.insurance, memo: formData.memo
-      } : v));
-    } else {
-      const assignedLaneId = (formData.laneId !== null && formData.laneId !== undefined) 
-        ? formData.laneId 
-        : getAvailableLaneId(formData.day, timeStr, formData.duration);
+    try {
+      if (editingId) {
+        const visitDoc = doc(db, 'visits', editingId);
+        await updateDoc(visitDoc, {
+          patient: formData.patient, day: formData.day, time: timeStr, duration: formData.duration, assigned: staffList, insurance: formData.insurance, memo: formData.memo
+        });
+      } else {
+        const assignedLaneId = (formData.laneId !== null && formData.laneId !== undefined) 
+          ? formData.laneId 
+          : getAvailableLaneId(formData.day, timeStr, formData.duration);
 
-      setVisits(prev => [...prev, {
-        id: Date.now(), day: formData.day, time: timeStr, duration: formData.duration, patient: formData.patient, staffNeeded: 1, assigned: staffList, insurance: formData.insurance, memo: formData.memo, laneId: assignedLaneId
-      }]);
+        await addDoc(collection(db, 'visits'), {
+          day: formData.day, time: timeStr, duration: formData.duration, patient: formData.patient, staffNeeded: 1, assigned: staffList, insurance: formData.insurance, memo: formData.memo, laneId: assignedLaneId
+        });
+      }
+    } catch (error) {
+      console.error("保存エラー: ", error);
+      alert("データの保存に失敗しました。");
     }
     setIsModalOpen(false);
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (window.confirm('この枠を削除しますか？')) {
-      setVisits(prev => prev.filter(v => v.id !== editingId));
+      try {
+        await deleteDoc(doc(db, 'visits', editingId));
+      } catch (error) {
+        console.error("削除エラー: ", error);
+      }
       setIsModalOpen(false);
     }
   };
 
   const handleDragStart = (e, visitId) => {
     e.stopPropagation();
-    e.dataTransfer.setData('visitId', visitId);
+    e.dataTransfer.setData('visitId', visitId); 
   };
 
   const handleDragOver = (e) => e.preventDefault();
 
-  const handleDrop = (e, targetDay) => {
+  const handleDrop = async (e, targetDay) => {
     e.preventDefault();
-    const visitId = parseInt(e.dataTransfer.getData('visitId'), 10);
+    const visitId = e.dataTransfer.getData('visitId');
     const visitToMove = visits.find(v => v.id === visitId);
     if (!visitToMove) return;
 
@@ -272,7 +314,16 @@ export default function App() {
     if (visitToMove.day !== targetDay || visitToMove.time !== targetTime || visitToMove.laneId !== targetLane) {
       const timeString = new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
       setMoveHistory(prev => [{ id: Date.now(), time: timeString, message: `${visitToMove.patient}様の枠を [${visitToMove.day} ${visitToMove.time}] から [${targetDay} ${targetTime} (レーン${targetLane + 1})] に移動しました。` }, ...prev]);
-      setVisits(prev => prev.map(v => v.id === visitId ? { ...v, day: targetDay, time: targetTime, laneId: targetLane } : v));
+      
+      try {
+        await updateDoc(doc(db, 'visits', visitId), {
+          day: targetDay,
+          time: targetTime,
+          laneId: targetLane
+        });
+      } catch (error) {
+        console.error("移動保存エラー: ", error);
+      }
     }
   };
 
@@ -283,7 +334,6 @@ export default function App() {
     
     const dayVisits = visits.filter(v => v.day === day);
     
-    // 1つでもカードが配置されているレーンの数をカウント
     const usedLanesCount = new Set(dayVisits.map(v => v.laneId)).size;
     const totalManpower = usedLanesCount;
 
@@ -292,7 +342,6 @@ export default function App() {
     return (
       <div key={day} className={`flex border-b-2 border-slate-300 group ${rowBgClass}`} style={{ height: `${calculatedHeight}px` }}>
         
-        {/* 左側1：曜日表示 */}
         <div className={`w-16 flex-shrink-0 sticky left-0 z-30 border-r border-slate-300 flex flex-col justify-center items-center shadow-[1px_0_0_#cbd5e1] transition-colors ${headerBgClass}`}>
           <div className="font-bold text-slate-700 text-base">{day}</div>
           <div className="text-[9px] text-blue-700 mt-1 font-bold bg-blue-50 inline-block px-1.5 py-0.5 rounded-full border border-blue-200 shadow-sm text-center">
@@ -300,7 +349,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* 左側2：レーン番号と増減ボタン */}
         <div className="w-10 flex-shrink-0 sticky left-16 z-30 border-r border-slate-300 bg-slate-50 flex flex-col shadow-[1px_0_0_#cbd5e1]">
           <div className="h-[26px] bg-slate-200 border-b border-slate-300 flex items-center justify-between px-0.5">
             <button onClick={() => updateLaneCount(day, -1)} className="w-3 h-4 flex items-center justify-center bg-white hover:bg-slate-100 rounded text-slate-600 text-[10px] font-bold shadow-sm">-</button>
@@ -314,7 +362,6 @@ export default function App() {
           ))}
         </div>
 
-        {/* タイムライン領域（ガイド枠のノイズを完全に撤去） */}
         <div 
           onDragOver={handleDragOver}
           onDrop={(e) => handleDrop(e, day)}
@@ -322,7 +369,6 @@ export default function App() {
           className="flex-1 relative overflow-hidden group-hover:bg-blue-50/10 transition-colors cursor-pointer"
           style={{ width: `${TIMELINE_WIDTH}px`, minWidth: `${TIMELINE_WIDTH}px` }}
         >
-          {/* 時間線 */}
           {Array.from({ length: 11 }).map((_, i) => (
             <div key={i} className="absolute top-0 bottom-0 border-l-2 border-slate-300 pointer-events-none" style={{ left: `${i * 60 * PIXELS_PER_MIN}px` }}></div>
           ))}
@@ -330,7 +376,6 @@ export default function App() {
             <div key={`${i}-half`} className="absolute top-0 bottom-0 border-l border-slate-300 border-dashed pointer-events-none opacity-30" style={{ left: `${(i * 60 + 30) * PIXELS_PER_MIN}px` }}></div>
           ))}
 
-          {/* 仮想レーンの横線 */}
           {Array.from({ length: currentLaneCount }).map((_, i) => (
             <div 
               key={`lane-line-${i}`} 
@@ -339,7 +384,6 @@ export default function App() {
             ></div>
           ))}
 
-          {/* 時間帯別マンパワー・カウンター */}
           <div className="absolute top-0 left-0 right-0 bg-slate-200/50 flex items-center pointer-events-none z-0" style={{ height: `${HEADER_OFFSET}px` }}>
             {Array.from({ length: 20 }).map((_, i) => {
               const minutes = i * 30;
@@ -355,7 +399,6 @@ export default function App() {
             })}
           </div>
 
-          {/* 訪問カード */}
           {dayVisits.map(pv => {
             const isTargetAssigned = selectedStaffFromUrl && pv.assigned && pv.assigned.includes(selectedStaffFromUrl);
             const leftPos = getMinutesFromStart(pv.time) * PIXELS_PER_MIN;
@@ -414,25 +457,50 @@ export default function App() {
     <div className="min-h-screen bg-slate-100 text-slate-800 p-2 md:p-6 relative">
       <div className="max-w-[1800px] mx-auto space-y-4">
         
-        {/* ヘッダー */}
+        {/* ★ 改修したヘッダー部分 */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-300 pb-4">
-          <div>
-            <div className="text-xs font-bold text-blue-600 tracking-wider uppercase mb-1">StationCore 連携</div>
-            <h1 className="text-2xl font-bold text-slate-800 tracking-wide flex items-center gap-2">📅 週間ガントスケジュール</h1>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 text-slate-700 text-sm font-semibold rounded-full shadow-sm hidden md:inline-flex">
-              <span className={`w-2 h-2 rounded-full ${selectedStaffFromUrl ? 'bg-amber-400 animate-pulse' : 'bg-blue-500'}`}></span>{displayMode}
+          <div className="flex items-center gap-4">
+            
+            {/* 左上のハンバーガーメニュー */}
+            <div className="relative">
+              <button 
+                onClick={() => setIsMenuOpen(!isMenuOpen)} 
+                className="p-2 bg-white border border-slate-300 rounded-lg shadow-sm hover:bg-slate-50 z-50 relative flex items-center justify-center"
+              >
+                <svg className="w-6 h-6 text-slate-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  {isMenuOpen ? (
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  ) : (
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                  )}
+                </svg>
+              </button>
+
+              {/* メニュー展開時のドロップダウンと背景透過オーバーレイ */}
+              {isMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setIsMenuOpen(false)}></div>
+                  <div className="absolute top-12 left-0 z-50 w-56 bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col">
+                    <button onClick={() => { setIsSlotsModalOpen(true); setIsMenuOpen(false); }} className="px-4 py-3 text-left text-sm font-bold text-emerald-600 hover:bg-emerald-50 border-b border-slate-100 flex items-center gap-2">
+                      🔍 空き枠を探す
+                    </button>
+                    <button onClick={() => { setIsHistoryOpen(!isHistoryOpen); setIsMenuOpen(false); }} className="px-4 py-3 text-left text-sm font-bold text-slate-700 hover:bg-slate-50 border-b border-slate-100">
+                      {isHistoryOpen ? '🕒 履歴を隠す' : '🕒 履歴を表示'}
+                    </button>
+                    <button onClick={() => { openNewModal(); setIsMenuOpen(false); }} className="px-4 py-3 text-left text-sm font-bold text-blue-600 hover:bg-blue-50">
+                      ＋ 枠の追加
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
-            
-            <button onClick={() => setIsSlotsModalOpen(true)} className="px-4 py-2 bg-emerald-50 text-emerald-600 border border-emerald-200 text-sm font-bold rounded-lg shadow-sm hover:bg-emerald-100 transition-colors">
-              🔍 空き枠を探す
-            </button>
-            
-            <button onClick={() => setIsHistoryOpen(!isHistoryOpen)} className="px-4 py-2 bg-white text-slate-600 border border-slate-300 text-sm font-medium rounded-lg shadow-sm hover:bg-slate-50 transition-colors">
-              {isHistoryOpen ? '履歴を隠す' : '履歴を表示'}
-            </button>
-            <button onClick={openNewModal} className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg shadow-sm hover:bg-blue-700 transition-colors">＋ 枠の追加</button>
+
+            {/* タイトル */}
+            <div>
+              <div className="text-xs font-bold text-blue-600 tracking-wider uppercase mb-1">StationCore 連携</div>
+              <h1 className="text-2xl font-bold text-slate-800 tracking-wide flex items-center gap-2">看護枠管理</h1>
+            </div>
+
           </div>
         </div>
 
@@ -485,6 +553,7 @@ export default function App() {
         </div>
       </div>
 
+      {/* 空き枠検索モーダル */}
       {isSlotsModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm transition-opacity" onClick={() => setIsSlotsModalOpen(false)}></div>
@@ -531,11 +600,15 @@ export default function App() {
                   </div>
                 );
               })}
+              {availableSlots.length === 0 && (
+                <div className="text-center text-slate-500 py-8 font-bold">現在、30分以上の空き枠はありません。</div>
+              )}
             </div>
           </div>
         </div>
       )}
 
+      {/* 登録・編集モーダル */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm transition-opacity" onClick={() => setIsModalOpen(false)}></div>
@@ -549,7 +622,7 @@ export default function App() {
             <div className="p-6 overflow-y-auto flex-1 space-y-5">
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-1">利用者名 <span className="text-red-500 text-xs ml-1">必須</span></label>
-                <input type="text" value={formData.patient} onChange={(e) => setFormData({...formData, patient: e.target.value})} placeholder="例: 山田 花子" className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:none focus:ring-2 focus:ring-blue-500" />
+                <input type="text" value={formData.patient} onChange={(e) => setFormData({...formData, patient: e.target.value})} placeholder="例: 山田 花子" className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
 
               <div>
